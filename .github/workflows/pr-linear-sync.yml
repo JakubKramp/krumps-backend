@@ -1,0 +1,58 @@
+name: PR and Linear sync
+
+on:
+  push:
+    branches-ignore:
+      - master
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract Linear issue key from branch name
+        id: issue
+        run: |
+          BRANCH="${GITHUB_REF#refs/heads/}"
+          KEY=$(echo "$BRANCH" | grep -oE '[A-Za-z]+-[0-9]+' | head -n1 || true)
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure a PR exists for this branch
+        id: pr
+        if: steps.issue.outputs.key != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="${{ steps.issue.outputs.branch }}"
+          EXISTING_URL=$(gh pr list --head "$BRANCH" --json url --jq '.[0].url // empty')
+          if [ -n "$EXISTING_URL" ]; then
+            echo "url=$EXISTING_URL" >> "$GITHUB_OUTPUT"
+            echo "created=false" >> "$GITHUB_OUTPUT"
+          else
+            URL=$(gh pr create \
+              --base master \
+              --head "$BRANCH" \
+              --title "${{ steps.issue.outputs.key }} ${BRANCH}" \
+              --body "Auto-created for ${{ steps.issue.outputs.key }}." \
+              --draft)
+            echo "url=$URL" >> "$GITHUB_OUTPUT"
+            echo "created=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Sync Linear issue
+        if: steps.issue.outputs.key != ''
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          ISSUE_KEY: ${{ steps.issue.outputs.key }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+          PR_CREATED: ${{ steps.pr.outputs.created }}
+          COMMIT_SHA: ${{ github.sha }}
+          COMMIT_URL: ${{ github.event.head_commit.url }}
+          ACTOR: ${{ github.actor }}
+        run: python3 .github/scripts/sync_linear.py
