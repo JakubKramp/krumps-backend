@@ -38,7 +38,7 @@ jobs:
             URL=$(gh pr create \
               --base master \
               --head "$BRANCH" \
-              --title "${{ steps.issue.outputs.key }} ${BRANCH}" \
+              --title "${BRANCH}" \
               --body "Auto-created for ${{ steps.issue.outputs.key }}." \
               --draft)
             echo "url=$URL" >> "$GITHUB_OUTPUT"
