@@ -29,11 +29,33 @@ APP_LOCATION = env.str("APP_LOCATION")
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS")
 PLAYWRIGHT_ENABLED = env.bool("PLAYWRIGHT_ENABLED", default=False)
 
+CLOUD_PROVIDER_REQUIRED_VARS = {
+    "local": [],
+    "test": [],
+    "google": ["GCLOUD_KEY_FILE", "GCLOUD_BUCKET_NAME"],
+    "aws": ["AWS_BUCKET_NAME", "AWS_REGION"],
+}
+
 CLOUD_PROVIDER = env.str("CLOUD_PROVIDER")
 
+if CLOUD_PROVIDER not in CLOUD_PROVIDER_REQUIRED_VARS:
+    raise environ.ImproperlyConfigured(
+        f"CLOUD_PROVIDER must be one of {sorted(CLOUD_PROVIDER_REQUIRED_VARS)}, got {CLOUD_PROVIDER!r}"
+    )
+
+missing_vars = [var for var in CLOUD_PROVIDER_REQUIRED_VARS[CLOUD_PROVIDER] if not env.str(var, default=None)]
+if missing_vars:
+    raise environ.ImproperlyConfigured(
+        f"CLOUD_PROVIDER={CLOUD_PROVIDER!r} requires env vars: {', '.join(missing_vars)}"
+    )
+
 # GCLOUD
-GCLOUD_KEY_FILE = env.str("GCLOUD_KEY_FILE")
-GCLOUD_BUCKET_NAME = env.str("GCLOUD_BUCKET_NAME")
+GCLOUD_KEY_FILE = env.str("GCLOUD_KEY_FILE", default=None)
+GCLOUD_BUCKET_NAME = env.str("GCLOUD_BUCKET_NAME", default=None)
+
+# AWS
+AWS_BUCKET_NAME = env.str("AWS_BUCKET_NAME", default=None)
+AWS_REGION = env.str("AWS_REGION", default=None)
 
 
 # STORAGE
