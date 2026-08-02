@@ -43,19 +43,21 @@ if CLOUD_PROVIDER not in CLOUD_PROVIDER_REQUIRED_VARS:
         f"CLOUD_PROVIDER must be one of {sorted(CLOUD_PROVIDER_REQUIRED_VARS)}, got {CLOUD_PROVIDER!r}"
     )
 
-missing_vars = [var for var in CLOUD_PROVIDER_REQUIRED_VARS[CLOUD_PROVIDER] if not env.str(var, default=None)]
+# env() rather than env.str() for optional values: environ types str()'s default as
+# `str | NoValue`, so a None default is a type error even though it works at runtime.
+missing_vars = [var for var in CLOUD_PROVIDER_REQUIRED_VARS[CLOUD_PROVIDER] if not env(var, default=None)]
 if missing_vars:
     raise environ.ImproperlyConfigured(
         f"CLOUD_PROVIDER={CLOUD_PROVIDER!r} requires env vars: {', '.join(missing_vars)}"
     )
 
 # GCLOUD
-GCLOUD_KEY_FILE = env.str("GCLOUD_KEY_FILE", default=None)
-GCLOUD_BUCKET_NAME = env.str("GCLOUD_BUCKET_NAME", default=None)
+GCLOUD_KEY_FILE = env("GCLOUD_KEY_FILE", default=None)
+GCLOUD_BUCKET_NAME = env("GCLOUD_BUCKET_NAME", default=None)
 
 # AWS
-AWS_BUCKET_NAME = env.str("AWS_BUCKET_NAME", default=None)
-AWS_REGION = env.str("AWS_REGION", default=None)
+AWS_BUCKET_NAME = env("AWS_BUCKET_NAME", default=None)
+AWS_REGION = env("AWS_REGION", default=None)
 
 
 # STORAGE
