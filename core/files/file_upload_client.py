@@ -34,6 +34,15 @@ class FileUploader:
     def get_url(filename: str) -> str:
         raise NotImplementedError
 
+    @staticmethod
+    def read_file(filename: str) -> bytes:
+        """
+        Fetch an object's bytes. Used when rendering PDFs: WeasyPrint needs the
+        image itself, and going via get_url() would make rendering depend on an
+        HTTP round-trip against a presigned URL that may already have expired.
+        """
+        raise NotImplementedError
+
 
 class GcloudFileUploader(FileUploader):
     @staticmethod
@@ -70,6 +79,14 @@ class GcloudFileUploader(FileUploader):
         return blob.generate_signed_url(
             expiration=timedelta(seconds=settings.FILE_URL_EXPIRATION_SECONDS), method="GET"
         )
+
+    @staticmethod
+    def read_file(filename: str) -> bytes:
+        from config import settings
+
+        client = Client.from_service_account_json(settings.GCLOUD_KEY_FILE)
+        bucket = client.bucket(settings.GCLOUD_BUCKET_NAME)
+        return bucket.blob(filename).download_as_bytes()
 
 
 class S3FileUploader(FileUploader):
@@ -111,8 +128,33 @@ class S3FileUploader(FileUploader):
             ExpiresIn=settings.FILE_URL_EXPIRATION_SECONDS,
         )
 
+    @staticmethod
+    def read_file(filename: str) -> bytes:
+        from config import settings
+
+        client = boto3.client("s3", region_name=settings.AWS_REGION)
+        return client.get_object(Bucket=settings.AWS_BUCKET_NAME, Key=filename)["Body"].read()
+
+
+# Smallest valid baseline JPEG: 1x1 grayscale, 141 bytes. Lets tests exercise the
+# real image path -- decoded by a renderer, not just passed around -- with no bucket.
+BLANK_JPEG = bytes(
+    [0xFF, 0xD8]                                                            # SOI
+    + [0xFF, 0xDB, 0x00, 0x43, 0x00] + [0xFF] * 64                          # DQT
+    + [0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00]  # SOF0
+    + [0xFF, 0xC4, 0x00, 0x14, 0x00] + [0x01] + [0x00] * 15 + [0x00]        # DHT (DC)
+    + [0xFF, 0xC4, 0x00, 0x14, 0x10] + [0x01] + [0x00] * 15 + [0x00]        # DHT (AC)
+    + [0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F, 0x00]          # SOS
+    + [0x3F]                                                                # DC=0, EOB
+    + [0xFF, 0xD9]                                                          # EOI
+)
+
 
 class TestFileUploader(FileUploader):
+    # Not a test class -- the name only means "the uploader used in tests".
+    # Without this pytest tries to collect it and warns about the constructor.
+    __test__ = False
+
     @staticmethod
     async def get_client():
         return None
@@ -127,6 +169,10 @@ class TestFileUploader(FileUploader):
     @staticmethod
     def get_url(filename: str) -> str:
         return "FakeUrl"
+
+    @staticmethod
+    def read_file(filename: str) -> bytes:
+        return BLANK_JPEG
 
 
 FILE_UPLOADER_CLASSES = {"google": GcloudFileUploader, "aws": S3FileUploader, "test": TestFileUploader}

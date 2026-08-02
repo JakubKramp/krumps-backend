@@ -18,6 +18,7 @@ from recipes.models import (
     Tag,
 )
 from recipes.nutritional_data import NutritionalAPIClient
+from recipes.pdf import render_dish_pdf
 from recipes.schemas import (
     CommentDetail,
     CreateComment,
@@ -196,12 +197,14 @@ async def delete_dish(dish_id: int, session: AsyncSession = Depends(get_session)
     return JSONResponse(content="", status_code=204)
 
 
-@ingredient_router.get("/dish/{dish_id}", response_model=DishDetail, status_code=200)
-async def dish_detail(dish_id: int, session: AsyncSession = Depends(get_session)):
-    dish = await session.get(Dish, dish_id)
-    if not dish:
-        raise HTTPException(status_code=404, detail="Dish not found")
+async def dish_nutrition(dish_id: int, session: AsyncSession) -> dict | None:
+    """
+    Nutritional totals for a dish, summed over its ingredients.
 
+    Shared by the JSON detail route and the PDF export so the two cannot drift
+    apart the next time the formula changes. None when the dish has no
+    ingredients to sum.
+    """
     nut_values = list(NutritionalValues.model_fields.keys())
     nut_expressions = [
         func.sum(getattr(Ingredient, param) * IngredientItem.amount / 100).label(param)
@@ -215,12 +218,45 @@ async def dish_detail(dish_id: int, session: AsyncSession = Depends(get_session)
         .group_by(IngredientItem.dish_id)
     )
     nut_row = nut_query.first()
+    return dict(zip(nut_values, nut_row)) if nut_row else None
+
+
+@ingredient_router.get("/dish/{dish_id}", response_model=DishDetail, status_code=200)
+async def dish_detail(dish_id: int, session: AsyncSession = Depends(get_session)):
+    dish = await session.get(Dish, dish_id)
+    if not dish:
+        raise HTTPException(status_code=404, detail="Dish not found")
 
     return {
         **dish.__dict__,
-        "nutritional_values": dict(zip(nut_values, nut_row)) if nut_row else None,
+        "nutritional_values": await dish_nutrition(dish_id, session),
         "comments": await dish_comments(dish_id, session),
     }
+
+
+@ingredient_router.get(
+    "/dish/{dish_id}/pdf",
+    status_code=200,
+    response_class=Response,
+    summary="Export a dish as a PDF",
+    responses={200: {"content": {"application/pdf": {}}, "description": "Rendered recipe"}},
+)
+async def dish_pdf(dish_id: int, session: AsyncSession = Depends(get_session)):
+    dish = await session.get(Dish, dish_id)
+    if not dish:
+        raise HTTPException(status_code=404, detail="Dish not found")
+
+    pdf = render_dish_pdf(dish, await dish_nutrition(dish_id, session))
+
+    # Rendered inline: a single recipe takes WeasyPrint tens of milliseconds, so
+    # the round trip through Celery and object storage would cost more than it
+    # saves. Move it to a task if bulk export ("all my recipes") is added.
+    filename = f"{dish.name.strip().replace(' ', '-').lower() or 'recipe'}.pdf"
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @ingredient_router.post("/dish/{dish_id}/tag", response_model=DishDetail, status_code=200)
