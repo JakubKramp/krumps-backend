@@ -88,6 +88,19 @@ jobs:
               ${{ env.IMAGE_TAG }}
               ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:latest
 
+    # The image carries the application code; the box only needs the compose
+    # file to drive it. Shipping just that file avoids checking the source out
+    # on the server (and the deploy key a private repo would require).
+    - name: Copy compose file to EC2
+      uses: appleboy/scp-action@v1
+      with:
+        host: ${{ secrets.VM_IP }}
+        username: ${{ secrets.VM_USER }}
+        key: ${{ secrets.VM_SSH_KEY }}
+        source: docker-compose-prod.yml
+        target: ~/cookbook
+        overwrite: true
+
     - name: Deploy to EC2
       uses: appleboy/ssh-action@v1
       with:
@@ -96,8 +109,7 @@ jobs:
         key: ${{ secrets.VM_SSH_KEY }}
         script: |
           set -e
-          cd ~/FastAPI_cookbook
-          git pull --ff-only
+          cd ~/cookbook
           aws ecr get-login-password --region ${{ secrets.AWS_REGION }} \
             | docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
           docker compose -f docker-compose-prod.yml pull

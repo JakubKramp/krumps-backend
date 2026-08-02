@@ -268,20 +268,17 @@ ssh -i "C:\path\to\cookbook-key.pem" ec2-user@<elastic-ip>
 
 ## Phase 6 — Environment file
 
-**Two separate files are needed** — this trips people up, because the compose file reads them
-differently:
+Everything lives in **`~/cookbook/`** — the directory CI copies the compose file into. Two files are
+needed there, because compose reads them at different times:
 
 | File | Read by | Contains |
 |---|---|---|
-| `~/config/.env` **and** `~/FastAPI_cookbook/config/.env` | the **app** | all app settings |
-| `~/FastAPI_cookbook/.env` | **compose itself** | `COOKBOOK_IMAGE`, `API_PORT` |
+| `~/cookbook/config/.env` | the **app** | all app settings |
+| `~/cookbook/.env` | **compose itself** | `COOKBOOK_IMAGE`, `API_PORT` |
 
-*Why two app copies:* the `api` service **bind-mounts** `~/config/.env` (an absolute path in your
-home directory), while `celery-beat`/`celery-worker` use `env_file: config/.env` (relative to the
-compose file). Same content, two locations. Keep them in sync — or symlink one to the other:
-`ln -sf ~/config/.env ~/FastAPI_cookbook/config/.env`.
+Create the directory first: `mkdir -p ~/cookbook/config`.
 
-**App settings** (`~/config/.env`), from `config/env.example`:
+**App settings** (`~/cookbook/config/.env`), from `config/env.example`:
 - `POSTGRES_HOST=<rds-endpoint>` ← the Phase 5b endpoint, **not** `postgres`
 - `POSTGRES_USER`, `POSTGRES_PASSWORD` (RDS master creds), `POSTGRES_DATABASE=cookbook`
 - `CELERY_BROKER_URL=redis://redis:6379/0` (still a container, still by service name)
@@ -291,14 +288,14 @@ compose file). Same content, two locations. Keep them in sync — or symlink one
 - plus `SECRET_KEY`, `NUTRITION_APIKEY`, `ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES`, `APP_LOCATION`,
   `ALLOWED_EXTENSIONS`, `FILE_MAX_UPLOAD_SIZE`, `FILE_URL_EXPIRATION_SECONDS`.
 
-**Compose settings** (`~/FastAPI_cookbook/.env`):
+**Compose settings** (`~/cookbook/.env`):
 
 ```sh
 COOKBOOK_IMAGE=<acct>.dkr.ecr.<region>.amazonaws.com/cookbook-api:latest
 API_PORT=80
 ```
 
-Lock the app file down: `chmod 600 ~/config/.env`.
+Lock the app file down: `chmod 600 ~/cookbook/config/.env`.
 
 *Why a separate compose file:* `${COOKBOOK_IMAGE}` and `${API_PORT}` are **shell interpolation**,
 resolved by compose before the container exists — compose only auto-loads `.env` from its own
@@ -312,22 +309,33 @@ deployment working off the same compose file.
 
 ## Phase 7 — Deploy
 
-CI's deploy step does `cd ~/FastAPI_cookbook`, so the repo must be checked out at exactly that path.
-Clone it first (secrets live in the `.env` files, not the repo, so a read-only clone is enough):
+**The source is never checked out on the box.** The image carries the application code; the host only
+needs `docker-compose-prod.yml` to drive it, and CI's `Copy compose file to EC2` step scp's that one
+file into `~/cookbook/` on every deploy. No git, no deploy key, no second copy of the source.
+
+For the **first** deploy, put the file there yourself — paste it via your editor of choice, or:
 
 ```sh
-git clone https://github.com/JakubKramp/FastAPI_cookbook.git ~/FastAPI_cookbook
+mkdir -p ~/cookbook/config
+curl -fsSL -o ~/cookbook/docker-compose-prod.yml \
+  https://raw.githubusercontent.com/JakubKramp/krumps-backend/master/docker-compose-prod.yml
 ```
 
-Then the first deploy, manually:
+(That URL only works once the branch is merged, and only for a public repo — otherwise just paste
+the file.) Then:
 
 ```sh
-cd ~/FastAPI_cookbook
+cd ~/cookbook
 aws ecr get-login-password --region <region> \
   | docker login --username AWS --password-stdin <acct>.dkr.ecr.<region>.amazonaws.com
 docker compose -f docker-compose-prod.yml pull
 docker compose -f docker-compose-prod.yml up -d
 ```
+
+*Why not clone:* a private repo would need a deploy key provisioned on the box purely to fetch one
+YAML file — a credential to store and rotate for no benefit. A full checkout also invites confusion
+about which code is running: **none of it is**, since nothing from the host is mounted into the
+containers except `config/.env`. To see what's actually deployed, use `docker compose images`.
 
 The entrypoint runs `alembic upgrade head` on api start, so migrations apply to RDS automatically on
 the first boot — no separate migration step.
@@ -356,7 +364,7 @@ this manual login is only needed for the first run.
 ## Adding HTTPS later (when you get a domain)
 
 To move off plain HTTP: register a domain, point an A record at the Elastic IP, add a `caddy`
-service to the compose stack (`reverse_proxy api:8000`), drop `API_PORT` from `~/FastAPI_cookbook/.env`
+service to the compose stack (`reverse_proxy api:8000`), drop `API_PORT` from `~/cookbook/.env`
 so the api stops publishing on 80, and open 443 in the security group. Caddy fetches and auto-renews
 a free Let's Encrypt cert with no extra config.
 
