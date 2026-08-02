@@ -3,7 +3,7 @@ volumes:
 
 services:
   api:
-    image: europe-west3-docker.pkg.dev/project-89939176-9dc3-469e-9dd/aprovevche-artifacts/cookbook-api:latest
+    image: ${COOKBOOK_IMAGE}
     depends_on:
       - postgres
     volumes:
@@ -11,22 +11,13 @@ services:
     ports:
       - '8000:8000'
 
-  postgres:
-    image: 'postgres:18.2'
-    env_file:
-      - config/.env
-    ports:
-          - "5431:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql
-
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
 
   celery-beat:
-    image: europe-west3-docker.pkg.dev/project-89939176-9dc3-469e-9dd/aprovevche-artifacts/cookbook-api:latest
+    image: ${COOKBOOK_IMAGE}
     command: celery -A app.celery_app beat --loglevel=info
     depends_on:
       - redis
@@ -35,7 +26,7 @@ services:
       - config/.env
 
   celery-worker:
-    image: europe-west3-docker.pkg.dev/project-89939176-9dc3-469e-9dd/aprovevche-artifacts/cookbook-api:latest
+    image: ${COOKBOOK_IMAGE}
     command: celery -A app.celery_app worker --loglevel=info
     depends_on:
       - redis

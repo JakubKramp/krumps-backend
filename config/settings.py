@@ -1,6 +1,6 @@
 import environ
 
-from core.constants import FILE_UPLOADER_CLASSES
+from core.files.file_upload_client import FILE_UPLOADER_CLASSES
 
 env = environ.Env()
 environ.Env.read_env()
@@ -61,5 +61,6 @@ AWS_REGION = env.str("AWS_REGION", default=None)
 # STORAGE
 FILE_MAX_UPLOAD_SIZE = env.int("FILE_MAX_UPLOAD_SIZE")
 ALLOWED_EXTENSIONS = env.list("ALLOWED_EXTENSIONS")
+FILE_URL_EXPIRATION_SECONDS = env.int("FILE_URL_EXPIRATION_SECONDS", default=3600)
 
 FILE_UPLOADER_CLASS = FILE_UPLOADER_CLASSES.get(CLOUD_PROVIDER, None)
