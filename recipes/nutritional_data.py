@@ -36,7 +36,7 @@ class NutritionalAPIClient:
     async def extract_nutritional_values(self, ingredient_name: str) -> NutritionalValues:
         data = await self.search_for_ingredients(ingredient_name)
         nutri_data = {
-            NUTRITIONAL_VALUES_MAPPING[nutrient['nutrientName']]: await self.process_value(nutrient)# type: ignore
+            NUTRITIONAL_VALUES_MAPPING[nutrient['nutrientName']]: await self.process_value(nutrient)
             for nutrient in data['foods'][0]['foodNutrients'] if nutrient['nutrientName'] in NUTRITIONAL_VALUES_MAPPING.keys()# type: ignore
         }
         return NutritionalValues(**nutri_data)

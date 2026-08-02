@@ -1,6 +1,6 @@
 import environ
 
-from core.files.file_upload_client import FILE_UPLOADER_CLASSES
+from core.files.file_upload_client import FILE_UPLOADER_CLASSES, FileUploader
 
 env = environ.Env()
 environ.Env.read_env()
@@ -63,4 +63,6 @@ FILE_MAX_UPLOAD_SIZE = env.int("FILE_MAX_UPLOAD_SIZE")
 ALLOWED_EXTENSIONS = env.list("ALLOWED_EXTENSIONS")
 FILE_URL_EXPIRATION_SECONDS = env.int("FILE_URL_EXPIRATION_SECONDS", default=3600)
 
-FILE_UPLOADER_CLASS = FILE_UPLOADER_CLASSES.get(CLOUD_PROVIDER, None)
+# Indexed rather than .get(..., None): an unknown provider is a misconfiguration and
+# should fail at startup like the required env vars above, not on the first upload.
+FILE_UPLOADER_CLASS: type[FileUploader] = FILE_UPLOADER_CLASSES[CLOUD_PROVIDER]

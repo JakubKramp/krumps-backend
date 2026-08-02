@@ -1,6 +1,6 @@
 from datetime import date
 from http.client import HTTPException
-from typing import List
+from typing import TYPE_CHECKING, List
 
 from fastapi import UploadFile
 from sqlalchemy import Column, ForeignKey, Index, String, Table, Text, UniqueConstraint, event, select, text
@@ -9,6 +9,12 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.utils.db import Base
 from config import settings
+
+# Imported for typing only: auth.models and fridge.models both import from this
+# module at runtime, so a real import here would be circular.
+if TYPE_CHECKING:
+    from auth.models import User
+    from fridge.models import Fridge
 
 
 class Ingredient(Base):
@@ -94,6 +100,8 @@ class Dish(Base):
     ingredients: Mapped[List["IngredientItem"]] = relationship(back_populates="dish", lazy="selectin")
     tags: Mapped[list["Tag"]] = relationship(secondary=dish_tag, back_populates="dish", lazy="selectin")
     images: Mapped[list["Image"]] = relationship(back_populates="dish", lazy="selectin")
+    author_id: Mapped[int | None] = mapped_column(ForeignKey("user.id"))
+    author: Mapped["User | None"] = relationship(back_populates="recipes", lazy="selectin")
     favorite_of: Mapped[list["User"]] = relationship(
         secondary=user_dish, back_populates="favorites", lazy="selectin"
     )
