@@ -12,6 +12,14 @@ FROM python:3.13-slim
 WORKDIR /app
 ENV PATH="/app/.venv/bin:$PATH"
 
+# WeasyPrint renders text through Pango; without these it imports but fails at
+# render time. All three services (api, celery-beat, celery-worker) run this
+# image, so installing here covers the worker too.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libpango-1.0-0 \
+        libpangoft2-1.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /app/.venv /app/.venv
 
 # Install Chromium for Playwright (DRI scraping) only when explicitly enabled at build time.

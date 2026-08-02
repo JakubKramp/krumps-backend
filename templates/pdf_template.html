@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ dish.name }}</title>
+<style>
+  /* ---------------------------------------------------------------------
+     Print geometry. WeasyPrint paginates from @page, so content flows onto
+     as many sheets as it needs -- do not put a fixed height on the body.
+     The footer lives in a page margin box so it repeats on every sheet.
+     --------------------------------------------------------------------- */
+  @page {
+    size: A4;
+    margin: 16mm 15mm 18mm;
+
+    @bottom-center {
+      content: "Recipe from Krumps \00B7 krumps.app";
+      font-family: var(--body-font);
+      font-style: italic;
+      font-size: 8pt;
+      color: #8a7a68;
+      padding-top: 4mm;
+      border-top: 0.4pt solid #d8c9b3;
+      width: 100%;
+    }
+    @bottom-right {
+      content: counter(page) " / " counter(pages);
+      font-family: var(--body-font);
+      font-size: 8pt;
+      color: #8a7a68;
+      padding-top: 4mm;
+    }
+  }
+
+  /* Self-host the fonts and point these at the files, e.g.
+       src: url("fonts/Newsreader.woff2") format("woff2");
+     A remote <link> is a live HTTP fetch at render time: it makes the worker
+     depend on the network and silently falls back to a default serif if it
+     fails, so the same recipe can render differently run to run. */
+  /*
+  @font-face { font-family: "Newsreader";       src: url("fonts/Newsreader.woff2") format("woff2"); }
+  @font-face { font-family: "Instrument Serif"; src: url("fonts/InstrumentSerif.woff2") format("woff2"); }
+  */
+
+  :root {
+    --body-font: "Newsreader", "Georgia", serif;
+    --display-font: "Instrument Serif", "Georgia", serif;
+    --ink: #2a221c;
+    --ink-strong: #201812;
+    --muted: #5c4d3e;
+    --faint: #8a7a68;
+    --accent: #c0431f;
+    --rule: #d8c9b3;
+    --wash: #eee5d5;
+    --chip: #d9c9ac;
+    --chip-ink: #8a5030;
+  }
+
+  html { font-size: 11pt; }
+
+  body {
+    margin: 0;
+    font-family: var(--body-font);
+    color: var(--ink);
+    /* Background is on @page rather than body so it covers the full sheet
+       including the margins, on every page. */
+  }
+  @page { background: #faf6ef; }
+
+  .logo { height: 12mm; margin-bottom: 6mm; }
+
+  h1 {
+    font-family: var(--display-font);
+    font-size: 30pt;
+    line-height: 1.1;
+    font-weight: 400;
+    margin: 0 0 3mm;
+    color: var(--ink-strong);
+  }
+
+  .meta {
+    font-size: 10pt;
+    color: var(--muted);
+    margin: 0 0 6mm;
+  }
+  /* Separator drawn in CSS: avoids emoji/icon glyphs, which turn into tofu
+     once the fonts are embedded and subset. */
+  .meta span + span::before {
+    content: "\00B7";
+    margin: 0 2.5mm;
+    color: var(--rule);
+  }
+
+  .photo {
+    width: 100%;
+    height: 60mm;
+    object-fit: cover;
+    border-radius: 2mm;
+    margin-bottom: 8mm;
+  }
+  .photo--empty {
+    background: var(--wash);
+    color: var(--faint);
+    font-size: 9pt;
+    text-align: center;
+    line-height: 60mm;
+  }
+
+  /* Two columns via table layout. WeasyPrint's grid support is the least
+     complete of its layout modes; table-cell is dependable and still breaks
+     across pages correctly when a recipe is long. */
+  .columns { display: table; width: 100%; border-spacing: 0; }
+  .col { display: table-cell; vertical-align: top; }
+  .col--ingredients { width: 38%; padding-right: 10mm; }
+  .col--steps { width: 62%; }
+
+  h2 {
+    font-size: 8pt;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 4mm;
+  }
+
+  .ingredients { width: 100%; border-collapse: collapse; font-size: 10.5pt; }
+  .ingredients td {
+    padding: 1.6mm 0;
+    border-bottom: 0.4pt dotted var(--rule);
+  }
+  .ingredients .amount { text-align: right; color: var(--faint); white-space: nowrap; }
+
+  .step { margin-bottom: 4mm; }
+  .step-no {
+    display: inline-block;
+    width: 6mm; height: 6mm;
+    border-radius: 50%;
+    background: var(--chip);
+    color: var(--chip-ink);
+    font-size: 9pt;
+    font-weight: 600;
+    text-align: center;
+    line-height: 6mm;
+    margin-right: 3mm;
+    vertical-align: top;
+  }
+  .step-body { display: inline-block; width: calc(100% - 9mm); font-size: 10.5pt; line-height: 1.5; }
+
+  /* Never split a row or a step across a page boundary. */
+  .ingredients tr, .step { break-inside: avoid; }
+  h2 { break-after: avoid; }
+</style>
+</head>
+<body>
+
+  {% if logo_src %}
+  <img class="logo" src="{{ logo_src }}" alt="">
+  {% endif %}
+
+  <h1>{{ dish.name }}</h1>
+
+  <p class="meta">
+    {% if dish.prep_time %}<span>{{ dish.prep_time }} min</span>{% endif %}
+    {% if dish.servings %}<span>Serves {{ dish.servings }}</span>{% endif %}
+    {% if kcal_per_serving %}<span>{{ kcal_per_serving }} kcal / serving</span>{% endif %}
+  </p>
+
+  {# src is an s3:// key resolved by the url_fetcher, so rendering never
+     performs an HTTP request against a presigned URL. #}
+  {% if main_image %}
+    <img class="photo" src="s3://{{ main_image.filename }}" alt="">
+  {% else %}
+    <div class="photo photo--empty">No photo</div>
+  {% endif %}
+
+  <div class="columns">
+    <div class="col col--ingredients">
+      <h2>Ingredients</h2>
+      <table class="ingredients">
+        {% for item in dish.ingredients %}
+        <tr>
+          <td>{{ item.ingredient.name }}</td>
+          <td class="amount">{{ item.amount }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="2">No ingredients listed.</td></tr>
+        {% endfor %}
+      </table>
+    </div>
+
+    <div class="col col--steps">
+      <h2>Instructions</h2>
+      {# Dish.recipe is one Text column, so steps are derived from line breaks. #}
+      {% set steps = (dish.recipe or "").splitlines() | map("trim") | select | list %}
+      {% for step in steps %}
+      <div class="step">
+        <span class="step-no">{{ loop.index }}</span><span class="step-body">{{ step }}</span>
+      </div>
+      {% else %}
+      <div class="step"><span class="step-body">No instructions provided.</span></div>
+      {% endfor %}
+    </div>
+  </div>
+
+</body>
+</html>
