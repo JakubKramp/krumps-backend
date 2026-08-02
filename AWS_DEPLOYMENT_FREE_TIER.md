@@ -1,9 +1,9 @@
 # AWS Deployment Runbook — Free-Tier (Single EC2)
 
 A simplified, free-tier-friendly deployment: **one EC2 instance** running your existing
-`docker-compose-prod.yml` stack (api, postgres, redis, celery-worker, celery-beat), accessed
-directly over HTTP at the instance's public IP. No domain, no Fargate, no ALB, no NAT gateway,
-no RDS, no ElastiCache.
+`docker-compose-prod.yml` stack (api, redis, celery-worker, celery-beat) with **Postgres on a
+free-tier RDS instance**, accessed directly over HTTP at the instance's public IP. No domain,
+no Fargate, no ALB, no NAT gateway, no ElastiCache.
 
 This is essentially your current GCP-VM model, moved to AWS, with Playwright/DRI scraping enabled.
 
@@ -16,13 +16,14 @@ This is essentially your current GCP-VM model, moved to AWS, with Playwright/DRI
 | ECS Fargate services | 1× EC2 `t3.micro` | Free tier: 750 hrs/mo for 12 months = one box 24/7 |
 | Application Load Balancer (~$18/mo) | direct HTTP on the box | No domain/TLS needed; access by public IP |
 | NAT gateway (~$32/mo) | none (public subnet) | The box has a public IP; no private-subnet egress |
-| RDS PostgreSQL | Postgres **container** | Already in your compose file |
+| RDS PostgreSQL (`db.t4g.micro`) | RDS **`db.t3.micro`** | Free tier: 750 hrs/mo for 12 months; keeps Chromium from OOM-ing the 1 GB box |
 | ElastiCache Redis | Redis **container** | Already in your compose file |
 | Custom VPC + subnets | **default VPC** | One public subnet is all a single box needs |
 | Route 53 + ACM cert | none | No domain — you reach it at `http://<elastic-ip>/` |
 
-**Cost:** ~$0 for the first 12 months (no domain to buy). After the free year: roughly **$8–9/mo**
-(t3.micro + small EBS + S3 pennies) vs ~$70+/mo for the Fargate stack.
+**Cost:** ~$0 for the first 12 months (no domain to buy). After the free year: roughly **$21–25/mo**
+(t3.micro ~$8 + `db.t3.micro` RDS ~$12–15 + EBS + S3 pennies) vs ~$70+/mo for the Fargate stack.
+The RDS instance is the biggest post-free-tier line item — set a billing alarm before month 12.
 
 > ⚠️ **No HTTPS.** Without a domain there's no TLS, so traffic — including login credentials to the
 > auth routes — travels in clear text. This is acceptable for testing/personal use. Before exposing
@@ -43,12 +44,16 @@ This is essentially your current GCP-VM model, moved to AWS, with Playwright/DRI
    │    │                                      │
    │    ├─ Playwright/Chromium (DRI scraping)  │
    │    │                                      │
-   │   postgres   redis   celery-worker  beat  │
-   │   (all docker containers, one compose)    │
-   └───────────────────┬───────────────────────┘
-                        │
-                        ▼
-                    S3 bucket  (dish images)
+   │   redis   celery-worker   celery-beat     │
+   │   (docker containers, one compose file)   │
+   └───────┬───────────────────────┬───────────┘
+           │ 5432                  │
+           ▼                       ▼
+   ┌───────────────┐        S3 bucket (dish images)
+   │ RDS Postgres  │
+   │ db.t3.micro   │
+   │ (private)     │
+   └───────────────┘
 ```
 
 ---
@@ -59,7 +64,8 @@ This is essentially your current GCP-VM model, moved to AWS, with Playwright/DRI
 - **No domain needed** — you access the app at `http://<elastic-ip>/`.
 - **Playwright is ENABLED** (`PLAYWRIGHT_ENABLED=true`). This requires:
   1. A **Dockerfile change** to install Chromium (Phase 1 below) — without it, DRI scraping crashes.
-  2. Enough memory headroom on a 1 GB box (Phase 4 swap; consider the RDS offload if it's tight).
+  2. Enough memory headroom on a 1 GB box — the Phase 4 swap, plus Postgres living on RDS
+     (Phase 5b) rather than competing with Chromium for the box's RAM.
 - **S3 bucket** already exists (for `S3FileUploader`); S3 has a small 12-month free tier.
 
 ---
@@ -98,19 +104,34 @@ of `.env` credentials.
 
 ## Phase 3 — Security group (EC2 console → Security Groups, default VPC)
 
-Create `cookbook-sg`:
+Create **two** SGs — `cookbook-sg` (the instance) and `cookbook-db-sg` (RDS). Create `cookbook-sg`
+first, since the DB rule references it.
+
+**`cookbook-sg`:**
 
 | Port | Source | Purpose |
 |---|---|---|
 | 80 (HTTP) | `0.0.0.0/0` | app traffic |
-| 22 (SSH) | **your IP only** | *optional* — admin access via SSH |
+| 22 (SSH) | `0.0.0.0/0` | CI deploy — see the warning below |
 
-*Why:* one box, one SG. 80 is public for the app; Postgres/Redis are **not** exposed (reachable only
-inside the Docker network). (No 443 since there's no TLS.)
+**`cookbook-db-sg`:**
 
-> The port-22 rule is **optional** — with the `AmazonSSMManagedInstanceCore` policy from Phase 2 you
-> can connect through **Session Manager** and leave SSH closed entirely. Add the SSH rule only if you
-> also want key-based `ssh` access.
+| Port | Source | Purpose |
+|---|---|---|
+| 5432 | **`cookbook-sg`** | Postgres, from the app box only |
+
+*Why:* 80 is public for the app; Redis is **not** exposed (it's `expose:`-only, reachable inside the
+Docker network). RDS accepts connections only from anything wearing `cookbook-sg` — referencing the
+SG rather than an IP means it keeps working if the instance is replaced. (No 443 since there's no TLS.)
+
+> ⚠️ **Port 22 is open to the world** because `ci.yml` deploys via `appleboy/ssh-action` from
+> GitHub-hosted runners, whose IPs are dynamic — you can't scope the rule to your own IP without
+> breaking CI. Key-only auth (`PasswordAuthentication no`, the Amazon Linux default) is what's
+> protecting it.
+>
+> To close port 22 entirely, switch the CI deploy step to `aws ssm send-command` over the OIDC role
+> CI already uses for ECR, and connect yourself via **Session Manager** (Phase 2's
+> `AmazonSSMManagedInstanceCore`). That removes the `VM_SSH_KEY` secret too.
 
 ---
 
@@ -133,7 +154,7 @@ dnf install -y docker
 systemctl enable --now docker
 usermod -aG docker ec2-user
 mkdir -p /usr/local/lib/docker/cli-plugins
-curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 \
+curl -fSL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 \
   -o /usr/local/lib/docker/cli-plugins/docker-compose
 chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 # 4 GB swap (Chromium spikes memory during DRI scraping)
@@ -142,10 +163,10 @@ chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
 echo '/swapfile none swap sw 0 0' >> /etc/fstab
 ```
 
-*Why the 4 GB swap:* baseline (postgres + redis + api + 2 celery ≈ 600 MB) already fills most of
-1 GB; launching Chromium adds another 300–500 MB. DRI scraping only runs occasionally (a
+*Why the 4 GB swap:* with Postgres on RDS the baseline is lighter (redis + api + 2 celery ≈ 350 MB),
+but launching Chromium still adds 300–500 MB on a 1 GB box. DRI scraping runs occasionally (a
 `BackgroundTask` on profile creation), so the swap absorbs those spikes rather than OOM-killing the
-box. If scraping is slow or still OOMs, use the RDS offload below.
+box.
 
 ---
 
@@ -155,6 +176,69 @@ box. If scraping is slow or still OOMs, use the RDS offload below.
 
 *Why:* with no domain you reach the app **by IP**, so a stable IP matters — a plain public IP
 changes on stop/start. An Elastic IP is fixed and free while associated with a running instance.
+
+---
+
+## Phase 5b — RDS PostgreSQL (free tier)
+
+1. **RDS console → Create database → Standard create → PostgreSQL.**
+   - Check the region offers **PostgreSQL 18** to match the `postgres:18.2` the stack used before;
+     if only ≤17 is offered, take that and bump deliberately later.
+2. Template **Free tier**. Instance **`db.t3.micro`**, 20 GB gp3, **storage autoscaling off**
+   (autoscaling can silently carry you past the 20 GB free allowance).
+3. Set master username + password — **save the password**, it becomes `POSTGRES_PASSWORD`.
+4. **Connectivity:** **default VPC**, **Public access: No**, security group **`cookbook-db-sg`**
+   (Phase 3). Leave "Connect to an EC2 compute resource" unset — the SG rule already covers it.
+5. **Additional configuration → Initial database name:** `cookbook`. This is easy to miss, and
+   without it RDS creates **no** database and the app fails to connect.
+6. Turn **off** Enhanced Monitoring and Performance Insights (both can bill outside the free tier).
+7. Create, wait for **Available**, then copy the **endpoint** → this is `POSTGRES_HOST`.
+
+Verify from the box before deploying:
+
+```sh
+sudo dnf install -y postgresql17
+psql -h <rds-endpoint> -U <master-user> -d cookbook -c 'select version();'
+```
+
+*Why:* Fargate-style managed Postgres on a box that also runs Chromium is the whole point of this
+choice — it frees ~250 MB of RAM and, more importantly, your data survives the instance being
+terminated, rebuilt, or resized. `entrypoint.sh` runs `alembic upgrade head` on api start, so the
+schema is created on first deploy; you only need the empty database to exist.
+
+> **Free-tier caveat:** the 750 hrs/mo RDS allowance covers **one** `db.t3.micro`. It also expires
+> after 12 months, after which this instance is roughly **$12–15/mo** — the largest line item in the
+> whole stack. Set a billing alarm.
+
+---
+
+## Phase 5c — SSH key for CI deploys
+
+`ci.yml`'s `Deploy to EC2` step authenticates with a private key from the `VM_SSH_KEY` secret.
+Generate a **separate, passphrase-less** key for CI rather than reusing your personal one:
+
+```sh
+ssh-keygen -t ed25519 -C "github-actions-cookbook" -f ~/.ssh/cookbook_ci -N ""
+cat ~/.ssh/cookbook_ci.pub >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+cat ~/.ssh/cookbook_ci        # copy this whole private key, BEGIN/END lines included
+```
+
+Then set the GitHub repo secrets (**Settings → Secrets and variables → Actions**):
+
+| Secret | Value |
+|---|---|
+| `VM_IP` | the Elastic IP from Phase 5 |
+| `VM_USER` | `ec2-user` |
+| `VM_SSH_KEY` | the full private key printed above |
+| `AWS_REGION`, `AWS_ROLE_ARN`, `ECR_REPOSITORY` | already used by the ECR push job |
+
+*Why a dedicated key:* it's stored in a third party's secret store and used unattended, so it should
+be revocable on its own — delete one line from `authorized_keys` and CI is cut off without touching
+your own access. Passphrase-less is required because the action can't answer a prompt.
+
+*Why not a passphrase-protected key:* there's nowhere to type the passphrase in a CI run; the
+protection comes from the key being single-purpose and revocable instead.
 
 ---
 
@@ -172,7 +256,7 @@ You need a shell on the instance to place the `.env` file and run the first depl
 *Why:* the shell runs over AWS's backplane (via the instance role), so you can keep port 22 closed
 entirely — no SSH exposure to the internet.
 
-**SSH (only if you added the port-22 rule):**
+**SSH (port 22 is open for CI — see Phase 3):**
 ```powershell
 icacls "C:\path\to\cookbook-key.pem" /inheritance:r
 icacls "C:\path\to\cookbook-key.pem" /grant:r "$($env:USERNAME):(R)"
@@ -184,69 +268,97 @@ ssh -i "C:\path\to\cookbook-key.pem" ec2-user@<elastic-ip>
 
 ## Phase 6 — Environment file
 
-Put your production `config/.env` on the box (mounted by the api/worker/beat services). Set:
-- `POSTGRES_HOST=postgres` (container name — DB stays on-box)
-- `CELERY_BROKER_URL=redis://redis:6379/0`
+**Two separate files are needed** — this trips people up, because the compose file reads them
+differently:
+
+| File | Read by | Contains |
+|---|---|---|
+| `~/config/.env` **and** `~/FastAPI_cookbook/config/.env` | the **app** | all app settings |
+| `~/FastAPI_cookbook/.env` | **compose itself** | `COOKBOOK_IMAGE`, `API_PORT` |
+
+*Why two app copies:* the `api` service **bind-mounts** `~/config/.env` (an absolute path in your
+home directory), while `celery-beat`/`celery-worker` use `env_file: config/.env` (relative to the
+compose file). Same content, two locations. Keep them in sync — or symlink one to the other:
+`ln -sf ~/config/.env ~/FastAPI_cookbook/config/.env`.
+
+**App settings** (`~/config/.env`), from `config/env.example`:
+- `POSTGRES_HOST=<rds-endpoint>` ← the Phase 5b endpoint, **not** `postgres`
+- `POSTGRES_USER`, `POSTGRES_PASSWORD` (RDS master creds), `POSTGRES_DATABASE=cookbook`
+- `CELERY_BROKER_URL=redis://redis:6379/0` (still a container, still by service name)
 - `CLOUD_PROVIDER=aws`, `AWS_BUCKET_NAME`, `AWS_REGION`
 - **`PLAYWRIGHT_ENABLED=true`**
-- `COOKBOOK_IMAGE=<acct>.dkr.ecr.<region>.amazonaws.com/cookbook-api:latest`
 - `CORS_ALLOWED_ORIGINS` — include `http://<elastic-ip>` if a browser frontend calls the API
-- plus `SECRET_KEY`, `POSTGRES_PASSWORD`, `NUTRITION_APIKEY`, and the rest from `config/env.example`.
+- plus `SECRET_KEY`, `NUTRITION_APIKEY`, `ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES`, `APP_LOCATION`,
+  `ALLOWED_EXTENSIONS`, `FILE_MAX_UPLOAD_SIZE`, `FILE_URL_EXPIRATION_SECONDS`.
 
-Then expose the api on port 80 — in `docker-compose-prod.yml`, set the `api` service ports to:
+**Compose settings** (`~/FastAPI_cookbook/.env`):
 
-```yaml
-    ports:
-      - "80:8000"
+```sh
+COOKBOOK_IMAGE=<acct>.dkr.ecr.<region>.amazonaws.com/cookbook-api:latest
+API_PORT=80
 ```
 
-*Why:* on a single box a `chmod 600` `.env` is the simplest secret store. Mapping host 80 → container
-8000 lets you reach the app at `http://<elastic-ip>/` with no reverse proxy.
+Lock the app file down: `chmod 600 ~/config/.env`.
+
+*Why a separate compose file:* `${COOKBOOK_IMAGE}` and `${API_PORT}` are **shell interpolation**,
+resolved by compose before the container exists — compose only auto-loads `.env` from its own
+directory, so putting them in `config/.env` leaves them empty and the image reference blank.
+
+*Why `API_PORT=80`:* it maps host 80 → container 8000 so you reach the app at `http://<elastic-ip>/`
+with no reverse proxy. It defaults to `8000` when unset, which is what keeps the existing GCP
+deployment working off the same compose file.
 
 ---
 
 ## Phase 7 — Deploy
 
-Your `ci.yml` already builds/pushes to ECR and SSHes into the box to run
-`docker compose -f docker-compose-prod.yml pull && up -d`. Point the CI secrets `VM_IP` (the Elastic
-IP), `VM_USER` (`ec2-user`), and `VM_SSH_KEY` at this instance. First deploy manually on the box:
+CI's deploy step does `cd ~/FastAPI_cookbook`, so the repo must be checked out at exactly that path.
+Clone it first (secrets live in the `.env` files, not the repo, so a read-only clone is enough):
+
+```sh
+git clone https://github.com/JakubKramp/FastAPI_cookbook.git ~/FastAPI_cookbook
+```
+
+Then the first deploy, manually:
 
 ```sh
 cd ~/FastAPI_cookbook
-aws ecr get-login-password --region <region> | docker login --username AWS --password-stdin <acct>.dkr.ecr.<region>.amazonaws.com
+aws ecr get-login-password --region <region> \
+  | docker login --username AWS --password-stdin <acct>.dkr.ecr.<region>.amazonaws.com
+docker compose -f docker-compose-prod.yml pull
 docker compose -f docker-compose-prod.yml up -d
 ```
 
-The entrypoint runs `alembic upgrade head` on api start, so migrations apply automatically.
+The entrypoint runs `alembic upgrade head` on api start, so migrations apply to RDS automatically on
+the first boot — no separate migration step.
+
+*Note:* `docker login` credentials expire after 12 hours, but CI re-authenticates on every deploy, so
+this manual login is only needed for the first run.
 
 ---
 
 ## Phase 8 — Verify
 
-1. `docker compose -f docker-compose-prod.yml ps` → all services **Up**.
-2. `http://<elastic-ip>/health-check` → **200**.
-3. Create a profile → confirm DRI scraping runs (check api logs for the Playwright job; Chromium
+1. `docker compose -f docker-compose-prod.yml ps` → four services (`api`, `redis`, `celery-worker`,
+   `celery-beat`) **Up**. There is deliberately **no** `postgres` container — it's RDS now.
+2. `docker compose -f docker-compose-prod.yml logs api` → migrations ran, no connection errors.
+   A hang here almost always means `cookbook-db-sg` isn't accepting from `cookbook-sg` (Phase 3).
+3. `curl -i http://<elastic-ip>/health-check` → **200**.
+4. Create a profile → confirm DRI scraping runs (check api logs for the Playwright job; Chromium
    should launch without a "browser not found" error — that verifies the Phase 1 Dockerfile change).
-4. Upload a dish image → lands in S3, presigned URL loads.
-5. `docker compose logs celery-beat` → schedule registered; `celery-worker` connected to Redis.
-
----
-
-## Optional — offload the DB to RDS free tier (recommended with Playwright)
-
-Chromium leaves little headroom on 1 GB. Moving Postgres off the box to a free-tier **`db.t3.micro`
-RDS** (750 hrs/mo for 12 months) frees ~250 MB and makes scraping far more reliable. Remove the
-`postgres` service from the compose file, point `POSTGRES_HOST` at the RDS endpoint, put the RDS in
-the default VPC, and lock its security group to `cookbook-sg`. Still fully free-tier.
+5. Upload a dish image → lands in S3, presigned URL loads.
+6. `docker compose -f docker-compose-prod.yml logs celery-beat` → schedule registered;
+   `celery-worker` connected to Redis.
+7. Push to `master` → the CI deploy step succeeds over SSH (verifies Phase 5c end to end).
 
 ---
 
 ## Adding HTTPS later (when you get a domain)
 
 To move off plain HTTP: register a domain, point an A record at the Elastic IP, add a `caddy`
-service to the compose stack (`reverse_proxy api:8000`), change the api port mapping back to an
-internal-only `8000`, and open 443 in the security group. Caddy fetches and auto-renews a free
-Let's Encrypt cert with no extra config.
+service to the compose stack (`reverse_proxy api:8000`), drop `API_PORT` from `~/FastAPI_cookbook/.env`
+so the api stops publishing on 80, and open 443 in the security group. Caddy fetches and auto-renews
+a free Let's Encrypt cert with no extra config.
 
 ---
 

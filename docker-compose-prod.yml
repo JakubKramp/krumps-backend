@@ -1,27 +1,21 @@
-volumes:
-  pgdata:
-
 services:
   api:
     image: ${COOKBOOK_IMAGE}
-    depends_on:
-      - postgres
     volumes:
       - ~/config/.env:/app/config/.env
     ports:
-      - '8000:8000'
+      - '${API_PORT:-8000}:8000'
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    expose:
+      - "6379"
 
   celery-beat:
     image: ${COOKBOOK_IMAGE}
     command: celery -A app.celery_app beat --loglevel=info
     depends_on:
       - redis
-      - postgres
     env_file:
       - config/.env
 
@@ -30,6 +24,5 @@ services:
     command: celery -A app.celery_app worker --loglevel=info
     depends_on:
       - redis
-      - postgres
     env_file:
       - config/.env
