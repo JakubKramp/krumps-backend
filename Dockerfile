@@ -13,6 +13,14 @@ WORKDIR /app
 ENV PATH="/app/.venv/bin:$PATH"
 
 COPY --from=builder /app/.venv /app/.venv
+
+# Install Chromium for Playwright (DRI scraping) only when explicitly enabled at build time.
+# Enable with: docker build --build-arg PLAYWRIGHT_ENABLED=true .
+ARG PLAYWRIGHT_ENABLED=false
+RUN if [ "$PLAYWRIGHT_ENABLED" = "true" ]; then \
+        playwright install --with-deps chromium; \
+    fi
+
 COPY . .
 
 RUN sed -i 's/\r//' entrypoint.sh && chmod +x entrypoint.sh

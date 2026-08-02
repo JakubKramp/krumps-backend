@@ -1,5 +1,3 @@
-from core.files.file_upload_client import GcloudFileUploader, TestFileUploader
-
 FILES_TO_CREATE = ["__init__.py", "routes.py", "schemas.py", "models.py"]
 DIRECTORIES_TO_CREATE = ["tests"]
 TEST_FILES_TO_CREATE = ["test_routes.py", "test_models.py", "conftest.py"]
@@ -40,5 +38,3 @@ FILE_CONTENTS = {
     "test_routes.py": TEST_ROUTES_CONTENT,
     "test_models.py": TEST_MODELS_CONTENT,
 }
-
-FILE_UPLOADER_CLASSES = {"google": GcloudFileUploader, "test": TestFileUploader}

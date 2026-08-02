@@ -48,40 +48,47 @@ jobs:
       - name: Run tests
         run: docker compose -f docker-compose-ci.yml run api pytest --cov=. --cov-fail-under=85
 
-  push-to-gar:
+  push-to-ecr:
     runs-on: ubuntu-latest
     needs: tests
     if: github.ref == 'refs/heads/master'
+    permissions:
+      id-token: write   # required for OIDC role assumption
+      contents: read
     steps:
     - name: Check out repo
       uses: actions/checkout@v6
 
-    - name: Set image tag
-      run: |
-        IMAGE_TAG="${{ secrets.GCLOUD_REGION }}-docker.pkg.dev/${{ secrets.GCLOUD_PROJECT_ID }}/${{ secrets.GCLOUD_REPOSITORY }}/cookbook-api:${{ github.sha }}"
-        echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
-
-    - name: Google Cloud Auth
-      uses: google-github-actions/auth@v2
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
       with:
-        credentials_json: "${{ secrets.GC_IMAGE_MANAGER_KEY }}"
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ secrets.AWS_REGION }}
 
-    - name: Set up google cloud SDK
-      uses: google-github-actions/setup-gcloud@v1
+    - name: Log in to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Configure Docker for GAR
-      run: gcloud auth configure-docker ${{ secrets.GCLOUD_REGION }}-docker.pkg.dev --quiet
+    - name: Set image tag
+      env:
+        REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+      run: |
+        IMAGE_TAG="$REGISTRY/$REPOSITORY:${{ github.sha }}"
+        echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
 
     - name: Build and Push image
       uses: docker/build-push-action@v5
       with:
         context: .
         push: true
+        build-args: |
+          PLAYWRIGHT_ENABLED=true
         tags: |
               ${{ env.IMAGE_TAG }}
-              ${{ secrets.GCLOUD_REGION }}-docker.pkg.dev/${{ secrets.GCLOUD_PROJECT_ID }}/${{ secrets.GCLOUD_REPOSITORY }}/cookbook-api:latest
+              ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:latest
 
-    - name: Deploy to VM
+    - name: Deploy to EC2
       uses: appleboy/ssh-action@v1
       with:
         host: ${{ secrets.VM_IP }}
@@ -89,7 +96,8 @@ jobs:
         key: ${{ secrets.VM_SSH_KEY }}
         script: |
           cd ~/FastAPI_cookbook
-          gcloud auth configure-docker europe-west3-docker.pkg.dev
+          aws ecr get-login-password --region ${{ secrets.AWS_REGION }} \
+            | docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
           docker compose -f docker-compose-prod.yml down
           docker compose -f docker-compose-prod.yml pull
           docker compose -f docker-compose-prod.yml up -d
