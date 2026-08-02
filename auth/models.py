@@ -10,7 +10,7 @@ from fridge.models import Fridge
 from recipes.models import user_dish
 
 if TYPE_CHECKING:
-    from recipes.models import Dish
+    from recipes.models import Comment, Dish
 
 
 class User(Base):
@@ -42,6 +42,7 @@ class User(Base):
         secondary=user_dish, back_populates="favorite_of", lazy="selectin"
     )
     recipes: Mapped[List["Dish"]] = relationship(back_populates="author", lazy="selectin")
+    comments: Mapped[List["Comment"]] = relationship(back_populates="author", lazy="selectin")
 
     @validates("email")
     def validate_email(self, key, address):

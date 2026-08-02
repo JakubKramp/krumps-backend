@@ -1,7 +1,7 @@
-from datetime import date
+from datetime import date, datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from recipes.tests.test_data.example_data import example_ingredient, example_product, example_tag
 
@@ -163,6 +163,9 @@ class DishDetail(ListDish):
     nutritional_values: NutritionalValues | None = None
     tags: List[TagSchema] = []
     is_favorite: bool = False
+    # Top-level comments, each with its replies nested. Populated by the routes
+    # via dish_comments(); Dish has no `comments` attribute to read this from.
+    comments: List["CommentDetail"] = []
 
     class Config:
         json_schema_extra = {
@@ -207,3 +210,37 @@ class ImageDetail(BaseModel):
     url: str
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class CreateComment(BaseModel):
+    body: str = Field(min_length=1, max_length=2000)
+    # Omit for a top-level comment. Pointing at a reply attaches to that reply's
+    # parent instead -- threads are capped at one level.
+    parent_id: int | None = None
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {"body": "Made this last night, the butter ratio is spot on.", "parent_id": None}
+        }
+    )
+
+
+class ReplyDetail(BaseModel):
+    id: int
+    body: str
+    created_at: datetime
+    author_id: int | None
+    parent_id: int | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CommentDetail(ReplyDetail):
+    """A top-level comment with its replies. Replies never carry replies of their own."""
+
+    replies: List[ReplyDetail] = []
+
+
+# DishDetail refers to CommentDetail before it exists; resolve that now rather
+# than leaving it to first use.
+DishDetail.model_rebuild()
