@@ -122,8 +122,15 @@ class Dish(Base):
     # holding only top-level comments with their replies nested, assembled by
     # dish_comments() in the routes. A name collision here would let Pydantic
     # serialise this flat list instead and lazy-load each reply mid-response.
+    # passive_deletes: comment.dish_id carries ON DELETE CASCADE, so the database
+    # removes these. Without it the ORM loads the whole collection during flush to
+    # cascade in Python -- IO outside the async context, i.e. MissingGreenlet.
+    # lazy="raise" because nothing should ever read this; it exists for the cascade.
     all_comments: Mapped[list["Comment"]] = relationship(
-        back_populates="dish", cascade="all, delete-orphan", lazy="selectin"
+        back_populates="dish",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        lazy="raise",
     )
 
 
@@ -273,7 +280,9 @@ class Comment(Base):
     # Nullable so deleting an author leaves the thread readable rather than
     # cascading their comments away.
     author_id: Mapped[int | None] = mapped_column(ForeignKey("user.id"))
-    author: Mapped["User | None"] = relationship(back_populates="comments", lazy="selectin")
+    # No lazy="selectin" here: only author_id is ever serialised, and pairing it
+    # with User.comments would make the two eager-load each other in a cycle.
+    author: Mapped["User | None"] = relationship(back_populates="comments")
 
     parent_id: Mapped[int | None] = mapped_column(
         ForeignKey("comment.id", ondelete="CASCADE"), index=True
@@ -283,8 +292,10 @@ class Comment(Base):
     # Deliberately not lazy="selectin" like the rest of this module: on a
     # self-referential relationship that walks the whole tree, one query per level.
     # The routes load it explicitly with selectinload() to a fixed depth.
+    # passive_deletes for the same reason as Dish.all_comments: parent_id carries
+    # ON DELETE CASCADE, so deleting a comment must not make the ORM walk the tree.
     replies: Mapped[list["Comment"]] = relationship(
-        back_populates="parent", cascade="all, delete-orphan"
+        back_populates="parent", cascade="all, delete-orphan", passive_deletes=True
     )
 
     def __repr__(self) -> str:

@@ -42,7 +42,9 @@ class User(Base):
         secondary=user_dish, back_populates="favorite_of", lazy="selectin"
     )
     recipes: Mapped[List["Dish"]] = relationship(back_populates="author", lazy="selectin")
-    comments: Mapped[List["Comment"]] = relationship(back_populates="author", lazy="selectin")
+    # Not lazy="selectin": get_current_user runs on every authenticated request and
+    # would otherwise eagerly load every comment the user has ever written.
+    comments: Mapped[List["Comment"]] = relationship(back_populates="author", lazy="raise")
 
     @validates("email")
     def validate_email(self, key, address):

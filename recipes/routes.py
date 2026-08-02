@@ -344,8 +344,9 @@ async def delete_comment(
     session: AsyncSession = Depends(get_session),
     user: User = Depends(get_current_user),
 ):
-    # Replies are loaded so the delete-orphan cascade does not lazy-load mid-flush.
-    comment = await session.get(Comment, comment_id, options=[selectinload(Comment.replies)])
+    # No need to load replies: parent_id has ON DELETE CASCADE and the relationship
+    # is passive_deletes, so the database removes them.
+    comment = await session.get(Comment, comment_id)
     if not comment:
         raise HTTPException(status_code=404, detail="Comment not found")
     if comment.author_id != user.id:
