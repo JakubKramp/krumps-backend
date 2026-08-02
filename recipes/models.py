@@ -1,9 +1,8 @@
-from datetime import date, timedelta
+from datetime import date
 from http.client import HTTPException
 from typing import List
 
 from fastapi import UploadFile
-from google.cloud.storage import Client
 from sqlalchemy import Column, ForeignKey, Index, String, Table, Text, UniqueConstraint, event, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
@@ -209,14 +208,7 @@ class Image(Base):
 
     @property
     def url(self) -> str:
-        client = Client.from_service_account_json(settings.GCLOUD_KEY_FILE)
-        bucket = client.bucket(settings.GCLOUD_BUCKET_NAME)
-        blob = bucket.blob(self.filename)
-        url = blob.generate_signed_url(
-            expiration=timedelta(hours=1),
-            method="GET",
-        )
-        return url
+        return settings.FILE_UPLOADER_CLASS.get_url(self.filename)
 
     @classmethod
     async def create(cls, file: UploadFile, dish_id: int, is_main: bool, session: AsyncSession) -> "Image":
