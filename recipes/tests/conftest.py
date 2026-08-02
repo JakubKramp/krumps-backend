@@ -5,8 +5,9 @@ import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.security import get_password_hash
 from auth.models import User
-from recipes.models import Ingredient
+from recipes.models import Dish, Ingredient
 from recipes.nutritional_data import NutritionalAPIClient
 from recipes.tests.test_data.example_data import (
     example_create_dish,
@@ -45,6 +46,44 @@ async def auth_headers_fixture(client: AsyncClient, user: User) -> dict[str, str
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+@pytest_asyncio.fixture(name="other_user")
+async def other_user_fixture(session: AsyncSession) -> User:
+    """A second account, for asserting that ownership checks actually bite."""
+    other = User(
+        username="otheruser",
+        password=get_password_hash("test_password"),
+        email="other@test.com",
+    )
+    session.add(other)
+    await session.commit()
+    await session.refresh(other)
+    return other
+
+
+@pytest_asyncio.fixture(name="other_auth_headers")
+async def other_auth_headers_fixture(client: AsyncClient, other_user: User) -> dict[str, str]:
+    response = await client.post(
+        "/user/login",
+        data={"username": other_user.username, "password": "test_password"},
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+@pytest_asyncio.fixture(name="db_dish")
+async def database_dish_fixture(session: AsyncSession) -> Dish:
+    dish = Dish(name="Mashed potatoes")
+    session.add(dish)
+    await session.commit()
+    await session.refresh(dish)
+    # Detach with its columns already loaded. Other fixtures (user, other_user)
+    # commit on this same session, and expire_on_commit would otherwise expire
+    # this instance -- reading dish.id in a test would then emit a lazy SELECT
+    # outside the async context and raise MissingGreenlet.
+    session.expunge(dish)
+    return dish
 
 
 @pytest.fixture(name="create_dish")

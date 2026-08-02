@@ -10,6 +10,7 @@ from app.security import get_current_user, get_current_user_optional
 from app.utils.db import get_session
 from auth.models import User
 from recipes.models import (
+    Comment,
     Dish,
     Image,
     Ingredient,
@@ -18,6 +19,8 @@ from recipes.models import (
 )
 from recipes.nutritional_data import NutritionalAPIClient
 from recipes.schemas import (
+    CommentDetail,
+    CreateComment,
     CreateDish,
     CreateIngredient,
     CreateTag,
@@ -31,6 +34,23 @@ from recipes.schemas import (
 )
 
 ingredient_router = APIRouter(prefix="/ingredients", tags=["ingredients"])
+
+
+async def dish_comments(dish_id: int, session: AsyncSession) -> list[Comment]:
+    """
+    A dish's top-level comments in thread order, each with its replies loaded.
+
+    Assembled here rather than read off Dish.all_comments, which is a flat list of
+    every comment and whose replies are lazy -- serialising that would emit IO
+    mid-response and blow up under async.
+    """
+    result = await session.scalars(
+        select(Comment)
+        .where(Comment.dish_id == dish_id, Comment.parent_id.is_(None))
+        .options(selectinload(Comment.replies))
+        .order_by(Comment.created_at, Comment.id)
+    )
+    return list(result.all())
 
 
 @ingredient_router.post("/", response_model=ListIngredient, status_code=201)
@@ -199,6 +219,7 @@ async def dish_detail(dish_id: int, session: AsyncSession = Depends(get_session)
     return {
         **dish.__dict__,
         "nutritional_values": dict(zip(nut_values, nut_row)) if nut_row else None,
+        "comments": await dish_comments(dish_id, session),
     }
 
 
@@ -221,7 +242,7 @@ async def dish_add_tag(dish_id: int, tag_data: CreateTag, session: AsyncSession 
 
     await session.commit()
     await session.refresh(dish)
-    return dish
+    return {**dish.__dict__, "comments": await dish_comments(dish_id, session)}
 
 
 @ingredient_router.post("/dish/{dish_id}/favorite", response_model=DishDetail, status_code=200)
@@ -245,6 +266,9 @@ async def dish_toggle_favorites(
     await session.refresh(dish)
     dish_data = DishDetail.model_validate(dish)
     dish_data.is_favorite = user in dish.favorite_of if user else False
+    dish_data.comments = [
+        CommentDetail.model_validate(comment) for comment in await dish_comments(dish_id, session)
+    ]
     return dish_data
 
 
@@ -272,3 +296,64 @@ async def delete_image(image_id: int, session: AsyncSession = Depends(get_sessio
     await session.delete(image)
     await session.commit()
     return JSONResponse(content="", status_code=204)
+
+
+@ingredient_router.post(
+    "/dish/{dish_id}/comments",
+    response_model=CommentDetail,
+    status_code=201,
+    summary="Comment on a dish, or reply to a comment",
+    response_description="Created comment",
+)
+async def create_comment(
+    dish_id: int,
+    comment_data: CreateComment,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    dish = await session.get(Dish, dish_id)
+    if not dish:
+        raise HTTPException(status_code=404, detail="Dish not found")
+
+    parent_id = comment_data.parent_id
+    if parent_id is not None:
+        parent = await session.get(Comment, parent_id)
+        if not parent or parent.dish_id != dish_id:
+            raise HTTPException(status_code=404, detail="Parent comment not found")
+        # Threads are one level deep: replying to a reply attaches to its parent.
+        # Every stored comment already satisfies that, so parent.parent_id is a root.
+        parent_id = parent.parent_id or parent.id
+
+    comment = Comment(
+        body=comment_data.body, dish_id=dish_id, author_id=user.id, parent_id=parent_id
+    )
+    session.add(comment)
+    # Flush assigns the id; read it now, because the commit below expires the
+    # instance and touching it afterwards would emit a synchronous SELECT.
+    await session.flush()
+    comment_id = comment.id
+    await session.commit()
+
+    # Re-select rather than refresh(): `replies` is lazy by default (see the model),
+    # so this loads the columns and the collection in one go and serialising the
+    # response cannot trigger implicit IO.
+    return await session.scalar(
+        select(Comment).where(Comment.id == comment_id).options(selectinload(Comment.replies))
+    )
+
+
+@ingredient_router.delete("/comment/{comment_id}", status_code=204)
+async def delete_comment(
+    comment_id: int,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    # No need to load replies: parent_id has ON DELETE CASCADE and the relationship
+    # is passive_deletes, so the database removes them.
+    comment = await session.get(Comment, comment_id)
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    if comment.author_id != user.id:
+        raise HTTPException(status_code=403, detail="You can only delete your own comments")
+    await session.delete(comment)
+    await session.commit()
