@@ -1,0 +1,30 @@
+name: OIDC debug
+
+# Temporary diagnostic for "Not authorized to perform sts:AssumeRoleWithWebIdentity".
+# Prints the claims GitHub puts in the OIDC token so they can be compared against
+# the role's trust policy condition. Delete once the deploy works.
+on: push
+
+jobs:
+  claims:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Print OIDC claims
+        run: |
+          TOKEN=$(curl -sH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "No OIDC token issued -- id-token: write is not taking effect."
+            exit 1
+          fi
+          # Decode the payload only; the token itself is never printed.
+          python3 -c "import sys,base64,json;p=sys.argv[1].split('.')[1];p+='='*(-len(p)%4);c=json.loads(base64.urlsafe_b64decode(p));print(json.dumps({k:c[k] for k in ('sub','aud','iss','repository','repository_owner','ref','workflow') if k in c},indent=2))" "$TOKEN"
+
+      - name: Expected trust policy condition
+        run: |
+          echo 'sub must match: repo:${{ github.repository }}:*'
+          echo 'iss must be:    https://token.actions.githubusercontent.com'
+          echo 'aud must be:    sts.amazonaws.com'
