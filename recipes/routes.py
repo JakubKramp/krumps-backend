@@ -103,11 +103,15 @@ async def delete_ingredient(ingredient_id: int, session: AsyncSession = Depends(
     summary="Create a dish",
     response_description="Created dish",
 )
-async def create_dish(dish_data: CreateDish, session: AsyncSession = Depends(get_session)):
+async def create_dish(
+    dish_data: CreateDish,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
     dish_dict = dish_data.model_dump()
     ingredients = dish_dict.pop("ingredients")
 
-    dish = Dish(**dish_dict)
+    dish = Dish(**dish_dict, author_id=user.id)
     session.add(dish)
     await session.flush()
 

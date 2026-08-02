@@ -121,11 +121,13 @@ class ListDish(BaseModel):
     servings: int | None
     prep_time: int | None
     ingredients: List[ListIngredientItem]
+    author_id: int | None
 
     class Config:
         json_schema_extra = {
             "example": {
                 "id": 72,
+                "author_id": 1,
                 "name": "Mashed potatoes",
                 "recipe": "Mash the potatoes along with the butter. Eat the mashed potatoes",
                 "servings": 4,

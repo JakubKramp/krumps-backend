@@ -19,7 +19,7 @@ class FileUploader:
         if self.file.size and self.file.size > settings.FILE_MAX_UPLOAD_SIZE:
             raise HTTPException(status_code=400, detail="File too large")
 
-    def upload_file(self):
+    async def upload_file(self):
         raise NotImplementedError
 
     @staticmethod

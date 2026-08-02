@@ -41,6 +41,7 @@ class User(Base):
     favorites: Mapped[List["Dish"]] = relationship(
         secondary=user_dish, back_populates="favorite_of", lazy="selectin"
     )
+    recipes: Mapped[List["Dish"]] = relationship(back_populates="author", lazy="selectin")
 
     @validates("email")
     def validate_email(self, key, address):
