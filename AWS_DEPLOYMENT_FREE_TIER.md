@@ -112,7 +112,7 @@ first, since the DB rule references it.
 | Port | Source | Purpose |
 |---|---|---|
 | 80 (HTTP) | `0.0.0.0/0` | app traffic |
-| 22 (SSH) | `0.0.0.0/0` | CI deploy — see the warning below |
+| 22 (SSH) | **your IP only** | *optional* — admin access; not needed by CI |
 
 **`cookbook-db-sg`:**
 
@@ -124,14 +124,11 @@ first, since the DB rule references it.
 Docker network). RDS accepts connections only from anything wearing `cookbook-sg` — referencing the
 SG rather than an IP means it keeps working if the instance is replaced. (No 443 since there's no TLS.)
 
-> ⚠️ **Port 22 is open to the world** because `ci.yml` deploys via `appleboy/ssh-action` from
-> GitHub-hosted runners, whose IPs are dynamic — you can't scope the rule to your own IP without
-> breaking CI. Key-only auth (`PasswordAuthentication no`, the Amazon Linux default) is what's
-> protecting it.
->
-> To close port 22 entirely, switch the CI deploy step to `aws ssm send-command` over the OIDC role
-> CI already uses for ECR, and connect yourself via **Session Manager** (Phase 2's
-> `AmazonSSMManagedInstanceCore`). That removes the `VM_SSH_KEY` secret too.
+> **Port 22 is entirely optional.** CI deploys over **SSM** (Phase 5c), not SSH, and you can get an
+> admin shell through **Session Manager** — so the instance can run with no inbound SSH at all.
+> Add the rule only if you specifically want `ssh`/`scp` from your own machine, and scope it to your
+> IP. Note that some networks block outbound port 22, in which case Session Manager is your only
+> route in — another reason not to depend on SSH.
 
 ---
 
@@ -212,33 +209,46 @@ schema is created on first deploy; you only need the empty database to exist.
 
 ---
 
-## Phase 5c — SSH key for CI deploys
+## Phase 5c — CI deploy permissions (SSM)
 
-`ci.yml`'s `Deploy to EC2` step authenticates with a private key from the `VM_SSH_KEY` secret.
-Generate a **separate, passphrase-less** key for CI rather than reusing your personal one:
+`ci.yml`'s `Deploy via SSM` step runs the deploy as a remote command through Systems Manager, reusing
+the OIDC role it already assumes to push to ECR. **There is no SSH key and no inbound port.**
 
-```sh
-ssh-keygen -t ed25519 -C "github-actions-cookbook" -f ~/.ssh/cookbook_ci -N ""
-cat ~/.ssh/cookbook_ci.pub >> ~/.ssh/authorized_keys
-chmod 600 ~/.ssh/authorized_keys
-cat ~/.ssh/cookbook_ci        # copy this whole private key, BEGIN/END lines included
+Add to the CI role's policy:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": ["ssm:SendCommand"],
+  "Resource": [
+    "arn:aws:ec2:<region>:<acct>:instance/<instance-id>",
+    "arn:aws:ssm:<region>::document/AWS-RunShellScript"
+  ]
+},
+{
+  "Effect": "Allow",
+  "Action": ["ssm:GetCommandInvocation"],
+  "Resource": "*"
+}
 ```
+
+Both resources are required on `SendCommand` — the instance **and** the document. Granting only the
+instance fails with a confusing `AccessDenied` that names neither.
 
 Then set the GitHub repo secrets (**Settings → Secrets and variables → Actions**):
 
 | Secret | Value |
 |---|---|
-| `VM_IP` | the Elastic IP from Phase 5 |
-| `VM_USER` | `ec2-user` |
-| `VM_SSH_KEY` | the full private key printed above |
+| `EC2_INSTANCE_ID` | e.g. `i-0abc123...` |
 | `AWS_REGION`, `AWS_ROLE_ARN`, `ECR_REPOSITORY` | already used by the ECR push job |
 
-*Why a dedicated key:* it's stored in a third party's secret store and used unattended, so it should
-be revocable on its own — delete one line from `authorized_keys` and CI is cut off without touching
-your own access. Passphrase-less is required because the action can't answer a prompt.
+*Why SSM over SSH:* no long-lived private key living in a third party's secret store, no inbound port
+to expose or scope, and it works from any network — including ones that block outbound 22. The
+instance role already has `AmazonSSMManagedInstanceCore` from Phase 2, which is the same permission
+that makes Session Manager work, so if Session Manager connects, this will too.
 
-*Why not a passphrase-protected key:* there's nowhere to type the passphrase in a CI run; the
-protection comes from the key being single-purpose and revocable instead.
+*The trade-off:* `send-command` is asynchronous, so the workflow submits the command, waits, then
+fetches the result — deploy output arrives as a block at the end rather than streaming live.
 
 ---
 
@@ -256,7 +266,7 @@ You need a shell on the instance to place the `.env` file and run the first depl
 *Why:* the shell runs over AWS's backplane (via the instance role), so you can keep port 22 closed
 entirely — no SSH exposure to the internet.
 
-**SSH (port 22 is open for CI — see Phase 3):**
+**SSH (only if you added the optional port-22 rule in Phase 3):**
 ```powershell
 icacls "C:\path\to\cookbook-key.pem" /inheritance:r
 icacls "C:\path\to\cookbook-key.pem" /grant:r "$($env:USERNAME):(R)"
@@ -310,19 +320,22 @@ deployment working off the same compose file.
 ## Phase 7 — Deploy
 
 **The source is never checked out on the box.** The image carries the application code; the host only
-needs `docker-compose-prod.yml` to drive it, and CI's `Copy compose file to EC2` step scp's that one
-file into `~/cookbook/` on every deploy. No git, no deploy key, no second copy of the source.
+needs `docker-compose-prod.yml` to drive it, and the `Deploy via SSM` step writes that one file into
+`/home/ec2-user/cookbook/` on every deploy (base64-encoded inside the remote command, so there's no
+file transfer to fail). No git, no deploy key, no second copy of the source.
 
-For the **first** deploy, put the file there yourself — paste it via your editor of choice, or:
+For the **first** deploy, put the file there yourself. Open a **Session Manager** shell, `sudo su -
+ec2-user`, then paste it with a quoted heredoc — the quotes stop the shell expanding
+`${COOKBOOK_IMAGE}` and `${API_PORT}` as it writes:
 
 ```sh
 mkdir -p ~/cookbook/config
-curl -fsSL -o ~/cookbook/docker-compose-prod.yml \
-  https://raw.githubusercontent.com/JakubKramp/krumps-backend/master/docker-compose-prod.yml
+cat > ~/cookbook/docker-compose-prod.yml <<'EOF'
+<paste the contents of docker-compose-prod.yml>
+EOF
 ```
 
-(That URL only works once the branch is merged, and only for a public repo — otherwise just paste
-the file.) Then:
+Then:
 
 ```sh
 cd ~/cookbook
