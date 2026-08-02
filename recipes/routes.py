@@ -328,13 +328,17 @@ async def create_comment(
         body=comment_data.body, dish_id=dish_id, author_id=user.id, parent_id=parent_id
     )
     session.add(comment)
+    # Flush assigns the id; read it now, because the commit below expires the
+    # instance and touching it afterwards would emit a synchronous SELECT.
+    await session.flush()
+    comment_id = comment.id
     await session.commit()
 
-    # Re-select rather than refresh(): the commit expired the columns and `replies`
-    # is lazy by default (see the model), so this loads both in one statement and
-    # serialising the response cannot trigger implicit IO.
+    # Re-select rather than refresh(): `replies` is lazy by default (see the model),
+    # so this loads the columns and the collection in one go and serialising the
+    # response cannot trigger implicit IO.
     return await session.scalar(
-        select(Comment).where(Comment.id == comment.id).options(selectinload(Comment.replies))
+        select(Comment).where(Comment.id == comment_id).options(selectinload(Comment.replies))
     )
 
 
