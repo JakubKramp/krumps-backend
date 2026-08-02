@@ -78,6 +78,11 @@ async def database_dish_fixture(session: AsyncSession) -> Dish:
     session.add(dish)
     await session.commit()
     await session.refresh(dish)
+    # Detach with its columns already loaded. Other fixtures (user, other_user)
+    # commit on this same session, and expire_on_commit would otherwise expire
+    # this instance -- reading dish.id in a test would then emit a lazy SELECT
+    # outside the async context and raise MissingGreenlet.
+    session.expunge(dish)
     return dish
 
 
