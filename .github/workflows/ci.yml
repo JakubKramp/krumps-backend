@@ -95,9 +95,10 @@ jobs:
         username: ${{ secrets.VM_USER }}
         key: ${{ secrets.VM_SSH_KEY }}
         script: |
+          set -e
           cd ~/FastAPI_cookbook
+          git pull --ff-only
           aws ecr get-login-password --region ${{ secrets.AWS_REGION }} \
             | docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
-          docker compose -f docker-compose-prod.yml down
           docker compose -f docker-compose-prod.yml pull
-          docker compose -f docker-compose-prod.yml up -d
+          docker compose -f docker-compose-prod.yml up -d --remove-orphans

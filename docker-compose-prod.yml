@@ -1,6 +1,8 @@
 services:
   api:
     image: ${COOKBOOK_IMAGE}
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    restart: unless-stopped
     volumes:
       - ~/config/.env:/app/config/.env
     ports:
@@ -8,12 +10,14 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     expose:
       - "6379"
 
   celery-beat:
     image: ${COOKBOOK_IMAGE}
     command: celery -A app.celery_app beat --loglevel=info
+    restart: unless-stopped
     depends_on:
       - redis
     env_file:
@@ -22,6 +26,7 @@ services:
   celery-worker:
     image: ${COOKBOOK_IMAGE}
     command: celery -A app.celery_app worker --loglevel=info
+    restart: unless-stopped
     depends_on:
       - redis
     env_file:
